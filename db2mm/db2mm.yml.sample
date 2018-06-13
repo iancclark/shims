@@ -1,0 +1,53 @@
+---
+config:
+  dsn: dbi:Pg:dbname=X;host=Y;sslmode=require
+  dbu: USER
+  dbp: PASS
+  ldap_uri: "ldaps://Z"
+  ldap_bind: DN
+  ldap_pass: PASS
+lists:
+  # From a couple of SQL tables
+  - name: sql
+    enabled: yes
+    notify_admin: no
+    welcome_message: yes
+    goodbye_message: yes
+    no_change: yes
+    queries: 
+     - query: "SELECT person.mail FROM person,membership where start_date>='01-aug-2017' and start_date<'01-aug-2018' and (end_date::timestamptz - start_date::timestamptz)::interval >'1 month':: interval and person_id=person.id"
+       type: "sql"
+
+  # A group with visible membership can be used to filter people who have a
+  # given groupName attribute
+  - name: ldap-a
+    enabled: yes
+    notify_admin: no
+    welcome_message: yes
+    goodbye_message: yes
+    no_change: yes
+    queries:
+     - query: "(groupName=group)"
+       type: ldap
+       base: "ou=people,o=example,dc=example,dc=net"
+       attrs:
+        - attr: mail
+          suffix: ""
+        - attr: uid
+          suffix: "@example.net"
+
+  # Alternatively, look at the group and get the members from there
+  - name: ldap-b
+    enabled: yes
+    notify_admin: no
+    welcome_message: yes
+    goodbye_message: yes
+    no_change: yes
+    queries:
+     - query: "(groupName=group)"
+       type: ldap
+       base: "ou=groups,o=example,dc=example,dc=net"
+       attrs:
+        - attr: allUid
+          suffix: "@example.net"
+
