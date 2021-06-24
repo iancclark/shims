@@ -6,6 +6,9 @@ config:
   ldap_uri: "ldaps://Z"
   ldap_bind: DN
   ldap_pass: PASS
+  soap_url: https://my.list.host/sympa/wsdl
+  soap_user: soap_user@mail
+  soap_pass: PASS
 lists:
   # From a couple of SQL tables
   - name: sql
@@ -50,4 +53,12 @@ lists:
        attrs:
         - attr: allUid
           suffix: "@example.net"
-
+  # Sympa lists work similarly, have a few different vars
+  - name: sympalist
+    welcome_mesage: yes
+    goodbye_message: yes
+    no_change: no
+    sympa: yes
+    queries:
+     - query: "SELECT mail FROM table WHERE filter"
+       type: sql
