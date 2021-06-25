@@ -46,6 +46,9 @@ foreach my $list (@{$conf->{lists}}) {
   print "$list->{name}\n";
   my $want_membs={};
   my $have_membs={};
+  my @adds=();
+  my @rems=();
+
   next if($list->{enabled} ne "yes");
 
   foreach my $q (@{$list->{queries}}) {
@@ -66,6 +69,7 @@ foreach my $list (@{$conf->{lists}}) {
 	foreach my $a (@{$q->{attrs}}) {
 	  if($entry->get_value($a->{attr})) {
 	    foreach my $v ($entry->get_value($a->{attr})) {
+              chomp($a->{suffix});
 	      $want_membs->{lc($v.$a->{suffix})}=1;
 	    }
 	    last;
@@ -88,55 +92,24 @@ foreach my $list (@{$conf->{lists}}) {
   } else {
     open(LISTMEMB,"/usr/lib/mailman/bin/list_members ".$list->{name}." |");
     while(<LISTMEMB>) {
+      chomp;
       $have_membs->{$_}=1;
     }
     close(LISTMEMB);
   }
 
-  if(!$list->{sympa}) {
-    my $opts="";
-    if($list->{notify_admin} eq "no") {
-      $opts.="-N ";
-    }
-    if($list->{goodbye_message} eq "no") {
-      $opts.="-n ";
-    }
-    open(MMREM,"|/usr/lib/mailman/bin/remove_members $opts $list->{name}");
+  if($list->{debug}) {
+    print("Have: ".join(",",sort(keys(%$have_membs)))."\n");
+    print("Want: ".join(",",sort(keys(%$want_membs)))."\n");
   }
   foreach my $m (sort(keys(%$have_membs))) {
     # This existing mail is not in the wanted list, and it's in the journal
     # so we added it in the first place so should remove it now
     if(!defined($want_membs->{$m}) && seen($list->{name},$m)!=0) {
-      if($list->{no_change} eq "yes") {
-        print "Would del $m\n";
-      } else {
-        if($list->{sympa}) {
-          my $quiet="true";
-          if($list->{goodbye_message} eq "yes") {
-            $quiet="false";
-          }
-          my $msg=$sympa->del($list->{name},$m,$quiet);
-          if($msg->fault) {
-            die "DEL of $m from $list->{name} failed\n";
-          }
-          print "Del: $m\n";
-        } else {
-          print(MMREM $m);
-        }
-        $jnl->do("DELETE FROM journal WHERE list=? AND mail=?",undef,$list->{name},$m);
-      } 
+      push(@rems,$m);
+    } elsif(!defined($want_membs->{$m})) {
+      print "$m previously manually added, ignoring.\n";
     }
-  }
-  if(!$list->{sympa}) {
-    close(MMREM);
-    my $opts="";
-    if($list->{notify_admin}) {
-      $opts.="--admin-notify=$list->{notify_admin} ";
-    }
-    if($list->{welcome_message}) {
-      $opts.="--welcome-msg=$list->{welcome_message} ";
-    }
-    open(MMADD,"| /usr/lib/mailman/bin/add_members $opts -r - $list->{name}");
   }
 
   foreach my $m (sort(keys(%$want_membs))) {
@@ -144,29 +117,82 @@ foreach my $list (@{$conf->{lists}}) {
     # journal so we need to add it. If it were in the journal it was
     # automatically added previously, but has been removed by other means
     if(!defined($have_membs->{$m}) && seen($list->{name},$m)==0) {
-      if($list->{no_change} && $list->{no_change} eq "yes") {
-        print "Would add $m\n";
-      } else {
-        if($list->{sympa}) {
-          my $quiet="true";
-          if($list->{welcome_message} eq "yes") {
-            $quiet="false";
-          }
-          my $msg=$sympa->add($list->{name},$m,'',$quiet);
-          if($msg->fault) {
-            die "Add of $m to $list->{name} failed\n";
-          }
-          print "Add: $m\n";
-        } else {
-          print "Adding $m to $list->{name}\n";
-          print(MMADD $m);
-        }
-        $jnl->do("INSERT INTO journal (list,mail) VALUES (?,?)",undef,$list->{name},$m);
-      }
+      push(@adds,$m);
+    } elsif(!defined($have_membs->{$m})) {
+      print "$m previously manually removed, ignoring.\n";
     }
   } 
-  if(!$list->{sympa}) {
-    close(MMADD);
+  if($list->{no_change} && $list->{no_change} eq "yes") {
+    foreach my $m (@adds) {
+      print "Would Add: $m\n";
+    }
+    foreach my $m (@rems) {
+      print "Would Rem: $m\n";
+    }
+  } elsif($list->{sympa}) {
+    foreach my $m (@adds) {
+      print "Add: $m\n";
+      my $quiet="true";
+      if($list->{welcome_message} eq "yes") {
+        $quiet="false";
+      }
+      my $msg=$sympa->add($list->{name},$m,'',$quiet);
+      if($msg->fault) {
+        die "Add of $m to $list->{name} failed\n";
+      }
+      $jnl->do("INSERT INTO journal (list,mail) VALUES (?,?)",undef,$list->{name},$m);
+    }
+    foreach my $m (@rems) {
+      print "Rem: $m\n";
+      my $quiet="true";
+      if($list->{goodbye_message} eq "yes") {
+        $quiet="false";
+      }
+      my $msg=$sympa->del($list->{name},$m,$quiet);
+      if($msg->fault) {
+        die "DEL of $m from $list->{name} failed\n";
+      }
+      $jnl->do("DELETE FROM journal WHERE list=? AND mail=?",undef,$list->{name},$m);
+    }
+  } else { # Mailman2
+    if(scalar(@adds)>0) {
+      my $opts="";
+      if($list->{notify_admin}) {
+        $opts.="--admin-notify=$list->{notify_admin} ";
+      }
+      if($list->{welcome_message}) {
+        $opts.="--welcome-msg=$list->{welcome_message} ";
+      }
+      open(MMADD,"| /usr/lib/mailman/bin/add_members $opts -r - $list->{name}");
+      foreach my $m (@adds) {
+        print "Add: $m\n";
+        print(MMADD $m);
+      }
+      if(close(MMADD)) {
+        $jnl->do("INSERT INTO journal (list,mail) VALUES (?,?)",undef,$list->{name},$m);
+      } else {
+        print "Warning: error occured with add_members. Journal not updated.\n";
+      }
+    }
+    if(scalar(@rems)>0) {
+      my $opts="";
+      if($list->{notify_admin} && $list->{notify_admin} eq "no") {
+        $opts.="-N ";
+      }
+      if($list->{goodbye_message} && $list->{goodbye_message} eq "no") {
+        $opts.="-n ";
+      }
+      open(MMREM,"|/usr/lib/mailman/bin/remove_members -f - $opts $list->{name}");
+      foreach my $m (@rems) {
+        print "Rem: $m\n";
+        print(MMREM $m);
+      }
+      if(close(MMREM)) {
+        $jnl->do("DELETE FROM journal WHERE list=? AND mail=?",undef,$list->{name},$m);
+      } else {
+        print "Warning: error occured with remove_members. Journal not updated.\n";
+      }
+    }
   }
 }
 
