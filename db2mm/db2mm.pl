@@ -14,7 +14,8 @@ $jnl->do(<<_CREATE_
 CREATE TABLE IF NOT EXISTS journal (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   list TEXT,
-  mail TEXT);
+  mail TEXT,
+  mode TEXT);
 _CREATE_
 );
 
@@ -103,23 +104,39 @@ foreach my $list (@{$conf->{lists}}) {
     print("Want: ".join(",",sort(keys(%$want_membs)))."\n");
   }
   foreach my $m (sort(keys(%$have_membs))) {
-    # This existing mail is not in the wanted list, and it's in the journal
-    # so we added it in the first place so should remove it now
-    if(!defined($want_membs->{$m}) && seen($list->{name},$m)!=0) {
-      push(@rems,$m);
-    } elsif(!defined($want_membs->{$m})) {
-      print "$m previously manually added, ignoring.\n";
+    my $s=seen($list->{name},$m);
+    if(!defined($want_membs->{$m})) {
+      # This existing mail is not in the wanted list
+      if($s eq "auto") {
+        # and was automatically added, so can be automatically removed
+	push(@rems,$m);
+      } elsif($s eq "unknown") {
+        # not seen, so presumably manually added
+        print "$m previously manually added, adding to journal.\n";
+        $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'man')",undef,$list->{name},$m);
+      } 
+    } else {
+      # Existing mail is in wanted list, set to auto
+      if($s eq "unknown") {
+        $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'auto')",undef,$list->{name},$m);
+      } else {
+	$jnl->do("UPDATE journal SET mode='auto' WHERE list=? AND mail=?",undef,$list->{name},$m);
+      }
     }
   }
 
   foreach my $m (sort(keys(%$want_membs))) {
-    # This wanted mail is not on the existing list, and it's not in the
-    # journal so we need to add it. If it were in the journal it was
-    # automatically added previously, but has been removed by other means
-    if(!defined($have_membs->{$m}) && seen($list->{name},$m)==0) {
-      push(@adds,$m);
-    } elsif(!defined($have_membs->{$m})) {
-      print "$m previously manually removed, ignoring.\n";
+    my $s=seen($list->{name},$m);
+    if(!defined($have_membs->{$m})) {
+      # This wanted mail is not on the existing list, 
+      if($s eq "unknown") { 
+        # It's not in the journal so we need to add it. 
+	push(@adds,$m);
+      } else {
+	# It is in the journal, so must have been manually removed
+	print "$m previously manually removed\n";
+	$jnl->do("UPDATE journal SET mode='man' WHERE list=? AND mail=?",undef,$list->{name},$m);
+      }
     }
   } 
   if($list->{no_change} && $list->{no_change} eq "yes") {
@@ -140,7 +157,7 @@ foreach my $list (@{$conf->{lists}}) {
       if($msg->fault) {
         die "Add of $m to $list->{name} failed\n";
       }
-      $jnl->do("INSERT INTO journal (list,mail) VALUES (?,?)",undef,$list->{name},$m);
+      $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'auto')",undef,$list->{name},$m);
     }
     foreach my $m (@rems) {
       print "Rem: $m\n";
@@ -152,7 +169,7 @@ foreach my $list (@{$conf->{lists}}) {
       if($msg->fault) {
         die "DEL of $m from $list->{name} failed\n";
       }
-      $jnl->do("DELETE FROM journal WHERE list=? AND mail=?",undef,$list->{name},$m);
+      $jnl->do("DELETE FROM journal WHERE list=? AND mail=? AND mode='auto'",undef,$list->{name},$m);
     }
   } else { # Mailman2
     if(scalar(@adds)>0) {
@@ -166,10 +183,10 @@ foreach my $list (@{$conf->{lists}}) {
       open(MMADD,"| /usr/lib/mailman/bin/add_members $opts -r - $list->{name}");
       foreach my $m (@adds) {
         print "Add: $m\n";
-        print(MMADD $m);
+        print(MMADD "$m\n");
       }
       if(close(MMADD)) {
-        $jnl->do("INSERT INTO journal (list,mail) VALUES (?,?)",undef,$list->{name},$m);
+        $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'auto')",undef,$list->{name},$m);
       } else {
         print "Warning: error occured with add_members. Journal not updated.\n";
       }
@@ -185,10 +202,10 @@ foreach my $list (@{$conf->{lists}}) {
       open(MMREM,"|/usr/lib/mailman/bin/remove_members -f - $opts $list->{name}");
       foreach my $m (@rems) {
         print "Rem: $m\n";
-        print(MMREM $m);
+        print(MMREM "$m\n");
       }
       if(close(MMREM)) {
-        $jnl->do("DELETE FROM journal WHERE list=? AND mail=?",undef,$list->{name},$m);
+        $jnl->do("DELETE FROM journal WHERE list=? AND mail=? AND mode='auto'",undef,$list->{name},$m);
       } else {
         print "Warning: error occured with remove_members. Journal not updated.\n";
       }
@@ -200,8 +217,12 @@ $ldap->unbind;
 
 sub seen {
   my ($list,$mail)=@_;
-  my $sth=$jnl->prepare("SELECT COUNT(*) FROM journal WHERE list=? AND mail=?");
+  my $sth=$jnl->prepare("SELECT mode FROM journal WHERE list=? AND mail=?");
   my $r=$sth->execute($list,$mail);
-  my ($count)=$sth->fetchrow_array();
-  return $count;
+  my @seen=$sth->fetchrow_array();
+  if(!@seen) {
+    return("unknown");
+  } else {
+    return(pop(@seen));
+  }
 }
