@@ -107,20 +107,24 @@ foreach my $list (@{$conf->{lists}}) {
     my $s=seen($list->{name},$m);
     if(!defined($want_membs->{$m})) {
       # This existing mail is not in the wanted list
-      if($s eq "auto") {
+      if($s eq "auto-add") {
         # and was automatically added, so can be automatically removed
 	push(@rems,$m);
       } elsif($s eq "unknown") {
         # not seen, so presumably manually added
         print "$m previously manually added, adding to journal.\n";
-        $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'man')",undef,$list->{name},$m);
-      } 
+        $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'man-add')",undef,$list->{name},$m);
+      } elsif($s eq "man-add") {
+	# not in wanted list from datasource, but exists and recorded in journal so we do nothing
+      }
     } else {
       # Existing mail is in wanted list, set to auto
       if($s eq "unknown") {
-        $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'auto')",undef,$list->{name},$m);
+	# unknown, add to journal
+        $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'auto-add')",undef,$list->{name},$m);
       } else {
-	$jnl->do("UPDATE journal SET mode='auto' WHERE list=? AND mail=?",undef,$list->{name},$m);
+	# set as automatic in journal
+	$jnl->do("UPDATE journal SET mode='auto-add' WHERE list=? AND mail=?",undef,$list->{name},$m);
       }
     }
   }
@@ -132,11 +136,16 @@ foreach my $list (@{$conf->{lists}}) {
       if($s eq "unknown") { 
         # It's not in the journal so we need to add it. 
 	push(@adds,$m);
+      } elsif($s eq "auto-rem") {
+	# automatically removed in the past, readd it
+	push(@adds,$m);
+      } elsif($s eq "man-rem") {
+	# Wanted by datasource, but not there now, but we know about it and do nothing
       } else {
 	# It is in the journal, so must have been manually removed
 	print "$m previously manually removed\n";
-	$jnl->do("UPDATE journal SET mode='man' WHERE list=? AND mail=?",undef,$list->{name},$m);
-      }
+	$jnl->do("UPDATE journal SET mode='man-rem' WHERE list=? AND mail=?",undef,$list->{name},$m);
+      } 
     }
   } 
   if($list->{no_change} && $list->{no_change} eq "yes") {
@@ -157,7 +166,7 @@ foreach my $list (@{$conf->{lists}}) {
       if($msg->fault) {
         die "Add of $m to $list->{name} failed\n";
       }
-      $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'auto')",undef,$list->{name},$m);
+      $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'auto-add')",undef,$list->{name},$m);
     }
     foreach my $m (@rems) {
       print "Rem: $m\n";
@@ -169,7 +178,7 @@ foreach my $list (@{$conf->{lists}}) {
       if($msg->fault) {
         die "DEL of $m from $list->{name} failed\n";
       }
-      $jnl->do("DELETE FROM journal WHERE list=? AND mail=? AND mode='auto'",undef,$list->{name},$m);
+      $jnl->do("UPDATE journal SET mode='auto-rem' WHERE list=? AND mail=?",undef,$list->{name},$m);
     }
   } else { # Mailman2
     if(scalar(@adds)>0) {
@@ -186,7 +195,7 @@ foreach my $list (@{$conf->{lists}}) {
         print(MMADD "$m\n");
       }
       if(close(MMADD)) {
-        $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'auto')",undef,$list->{name},$m);
+        $jnl->do("INSERT INTO journal (list,mail,mode) VALUES (?,?,'auto-add')",undef,$list->{name},$m);
       } else {
         print "Warning: error occured with add_members. Journal not updated.\n";
       }
@@ -205,7 +214,7 @@ foreach my $list (@{$conf->{lists}}) {
         print(MMREM "$m\n");
       }
       if(close(MMREM)) {
-        $jnl->do("DELETE FROM journal WHERE list=? AND mail=? AND mode='auto'",undef,$list->{name},$m);
+        $jnl->do("UPDATE journal SET mode='auto-rem' WHERE list=? AND mail=?",undef,$list->{name},$m);
       } else {
         print "Warning: error occured with remove_members. Journal not updated.\n";
       }
